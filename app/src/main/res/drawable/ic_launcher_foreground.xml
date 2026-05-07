@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!--
+      Commodore "C=" mark, modeled directly on the Wikipedia commons SVG
+      (Commodore_logo.svg): one cubic-bezier C path plus two trapezoidal
+      pennants. The polygon coordinates were pre-multiplied through the
+      original SVG's matrix(.33075 0 0 .32169 9.5987 7.486) so they sit in
+      the same local coord space as the C path. Source bbox is roughly
+      108.305 × 105.219; the outer group scales by 0.665 and translates by
+      (18, 19) to fit inside the adaptive-icon safe zone.
+    -->
+    <group
+        android:scaleX="0.665"
+        android:scaleY="0.665"
+        android:translateX="18"
+        android:translateY="19">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="m52.625,0 c-29.054,0 -52.625,23.571 -52.625,52.625 s23.571,52.594 52.625,52.594 c5.5874,0 10.98,-0.88711 16.031,-2.5 v-26.25 c-4.3621,2.5362 -9.4669,4 -14.938,4 c-15.988,0 -28.938,-12.465 -28.938,-27.844 s12.95,-27.844 28.938,-27.844 c5.4706,0 10.575,1.4638 14.938,4 v-26.281 c-5.0513,-1.6148 -10.444,-2.5 -16.031,-2.5 z" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M108.305,32.611 L90.785,50.866 L69.118,50.866 L69.118,32.611 Z" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M108.305,72.821 L90.785,54.565 L69.118,54.565 L69.118,72.821 Z" />
+    </group>
+</vector>
