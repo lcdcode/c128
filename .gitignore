@@ -1,0 +1,79 @@
+build/
+app/build/
+*/build/
+out/
+bin/
+
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle-wrapper.properties
+
+.kotlin/
+*.kotlin_module
+
+*.apk
+*.aab
+*.ap_
+*.dex
+local.properties
+captures/
+.cxx/
+.externalNativeBuild/
+
+# Signing / secrets
+*.jks
+*.keystore
+keystore.properties
+release.properties
+signing.properties
+secrets.properties
+*.pem
+*.p12
+*.pfx
+*.cer
+*.crt
+*.key
+google-services.json
+firebase-credentials.json
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.fleet/
+.nb-gradle/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+._*
+Thumbs.db
+
+# Agent / per-developer state
+.claude/
+
+# Logs / crash dumps / profiling
+*.log
+*.tmp
+hs_err_pid*
+replay_pid*
+*.hprof
+
+# Test / coverage / lint
+**/test-results/
+**/reports/
+coverage/
+*.exec
+jacoco.exec
+lint-results*.html
+lint-results*.xml
