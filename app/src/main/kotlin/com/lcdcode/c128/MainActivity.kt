@@ -177,7 +177,7 @@ private fun C128App(modeState: MutableState<Boolean>, activity: MainActivity? = 
             },
             singleLine = true,
             keyboardOptions = KeyboardOptions(
-                autoCorrect = false,
+                autoCorrectEnabled = false,
                 capitalization = KeyboardCapitalization.Characters,
                 imeAction = ImeAction.Done,
             ),

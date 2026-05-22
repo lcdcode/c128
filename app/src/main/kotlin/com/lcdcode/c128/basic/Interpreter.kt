@@ -2,9 +2,15 @@ package com.lcdcode.c128.basic
 
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.yield
+import java.util.Random
 import kotlin.math.pow
 
 private const val MAX_STACK_DEPTH = 256
+
+// Returned when the cursor advances past the end of the token list. The
+// tokenizer normally appends an EOL terminator, but defending here means a
+// malformed statement can't escape the BasicError channel as an AIOOBE.
+private val EOL_TOKEN = Token(TokenType.EOL, "")
 
 interface BasicConsole {
     fun print(s: String)
@@ -38,6 +44,15 @@ class Interpreter(private val out: BasicConsole) {
     private val forStack = ArrayDeque<ForFrame>()
     private val gosubStack = ArrayDeque<GosubFrame>()
 
+    // 64K of simulated RAM for PEEK/POKE. No banking, no I/O side effects —
+    // writes to VIC-II / SID / etc. registers are accepted but produce no output.
+    private val ram = ByteArray(65536)
+
+    // DATA values are collected once at RUN time (a flat queue across all DATA
+    // statements in program-line order). READ pulls from here; RESTORE rewinds.
+    private val dataItems = mutableListOf<Value>()
+    private var dataPointer = 0
+
     private var tokens: List<Token> = emptyList()
     private var pos: Int = 0
     private var currentLine: Int = -1 // -1 = direct mode
@@ -52,6 +67,23 @@ class Interpreter(private val out: BasicConsole) {
     // Tests set this to 0 to keep the suite fast.
     var statementDelayMs: Long = 2L
 
+    // RND state. Real BASIC: RND(positive) draws a new sample, RND(0) re-emits
+    // the last one, RND(negative) reseeds with the integer part of the arg.
+    private var random = Random()
+    private var lastRnd = 0.0
+
+    private fun rnd(x: Double): Value.Num {
+        when {
+            x < 0.0 -> {
+                random = Random(x.toRawBits())
+                lastRnd = random.nextDouble()
+            }
+            x == 0.0 -> { /* return previous value */ }
+            else -> lastRnd = random.nextDouble()
+        }
+        return Value.Num(lastRnd)
+    }
+
     /** Execute one line of source. */
     suspend fun execLine(source: String) {
         val trimmed = source.trim()
@@ -61,8 +93,12 @@ class Interpreter(private val out: BasicConsole) {
         val lineNum = head.toIntOrNull()
         if (lineNum != null) {
             val rest = if (firstSpace >= 0) trimmed.substring(firstSpace + 1) else ""
-            if (rest.isBlank()) program.remove(lineNum)
-            else program.put(lineNum, rest)
+            try {
+                if (rest.isBlank()) program.remove(lineNum)
+                else program.put(lineNum, rest)
+            } catch (e: BasicError) {
+                out.println(e.displayLine)
+            }
             return
         }
         runDirect(trimmed)
@@ -75,7 +111,8 @@ class Interpreter(private val out: BasicConsole) {
             pos = 0
             executeStatements()
         } catch (e: BasicError) {
-            out.println(e.displayLine)
+            printError(e)
+            currentLine = -1
         }
     }
 
@@ -93,8 +130,7 @@ class Interpreter(private val out: BasicConsole) {
                     currentLine = -1
                     return
                 }
-                val src = program.get(currentLine) ?: Err.undef()
-                tokens = Tokenizer.tokenize(src)
+                tokens = program.tokens(currentLine) ?: Err.undef()
                 pos = 0
                 val cont = executeStatements()
                 currentLine = when (cont) {
@@ -104,10 +140,14 @@ class Interpreter(private val out: BasicConsole) {
                 }
             }
         } catch (e: BasicError) {
-            if (currentLine >= 0) out.println(e.displayLine + " IN " + currentLine)
-            else out.println(e.displayLine)
+            printError(e)
             currentLine = -1
         }
+    }
+
+    private fun printError(e: BasicError) {
+        if (currentLine >= 0) out.println(e.displayLine + " IN " + currentLine)
+        else out.println(e.displayLine)
     }
 
     private sealed class Continuation {
@@ -149,6 +189,10 @@ class Interpreter(private val out: BasicConsole) {
             TokenType.RETURN -> { advance(); doReturn() }
             TokenType.LOAD -> { advance(); doLoad(); null }
             TokenType.GO -> { advance(); doGo() }
+            TokenType.DATA -> { advance(); doData(); null }
+            TokenType.READ -> { advance(); doRead(); null }
+            TokenType.RESTORE -> { advance(); doRestore(); null }
+            TokenType.POKE -> { advance(); doPoke(); null }
             TokenType.IDENT -> { doLet(); null } // implicit LET
             else -> Err.syntax()
         }
@@ -200,6 +244,8 @@ class Interpreter(private val out: BasicConsole) {
         program.clear()
         numVars.clear(); strVars.clear()
         forStack.clear(); gosubStack.clear()
+        ram.fill(0)
+        dataItems.clear(); dataPointer = 0
     }
 
     private suspend fun doRun(): Continuation {
@@ -207,8 +253,97 @@ class Interpreter(private val out: BasicConsole) {
         if (peek().type == TokenType.NUMBER) line = consume(TokenType.NUMBER).number.toInt()
         numVars.clear(); strVars.clear()
         forStack.clear(); gosubStack.clear()
+        scanDataItems()
         runProgram(line)
         return Continuation.End
+    }
+
+    /** Walk every program line, collect DATA literals into a flat queue. */
+    private fun scanDataItems() {
+        dataItems.clear()
+        dataPointer = 0
+        for ((line, _) in program.list()) {
+            // Set currentLine so a malformed DATA statement reports the offending
+            // line via the shared error printer rather than a bare ?SYNTAX ERROR.
+            currentLine = line
+            val ts = program.tokens(line) ?: continue
+            var i = 0
+            while (i < ts.size) {
+                if (ts[i].type != TokenType.DATA) { i++; continue }
+                i++ // past DATA
+                while (i < ts.size && ts[i].type != TokenType.EOL && ts[i].type != TokenType.COLON) {
+                    var negate = false
+                    if (ts[i].type == TokenType.MINUS) { negate = true; i++ }
+                    if (i >= ts.size) Err.syntax()
+                    val tk = ts[i]
+                    when (tk.type) {
+                        TokenType.NUMBER -> dataItems.add(Value.Num(if (negate) -tk.number else tk.number))
+                        TokenType.STRING -> {
+                            if (negate) Err.syntax()
+                            dataItems.add(Value.Str(tk.text))
+                        }
+                        TokenType.IDENT -> {
+                            if (negate) Err.syntax()
+                            dataItems.add(Value.Str(tk.text))
+                        }
+                        else -> Err.syntax()
+                    }
+                    i++
+                    if (i < ts.size && ts[i].type == TokenType.COMMA) i++
+                }
+            }
+        }
+    }
+
+    private fun doData() {
+        // Runtime no-op: values were already collected by scanDataItems().
+        // Just consume tokens until end of statement.
+        while (peek().type != TokenType.EOL && peek().type != TokenType.COLON) advance()
+    }
+
+    private fun doRead() {
+        while (true) {
+            val nameTok = consume(TokenType.IDENT)
+            if (dataPointer >= dataItems.size) Err.outOfData()
+            val item = dataItems[dataPointer++]
+            if (nameTok.text.endsWith("$")) {
+                val s = when (item) {
+                    is Value.Str -> item.v
+                    is Value.Num -> basicFormatNumber(item.v).trim()
+                }
+                strVars[nameTok.text] = s
+            } else {
+                val n = when (item) {
+                    is Value.Num -> item.v
+                    is Value.Str -> item.v.toDoubleOrNull() ?: Err.typeMismatch()
+                }
+                numVars[nameTok.text] = n
+            }
+            if (peek().type != TokenType.COMMA) break
+            advance()
+        }
+    }
+
+    private fun doRestore() {
+        // Optional line-number argument is accepted but ignored; we always
+        // rewind to the start of the data queue, which matches the common case.
+        if (peek().type == TokenType.NUMBER) advance()
+        dataPointer = 0
+    }
+
+    private fun doPoke() {
+        val addr = numOf(evalExpr()).toInt()
+        if (peek().type != TokenType.COMMA) Err.syntax()
+        advance()
+        val value = numOf(evalExpr()).toInt()
+        if (addr !in 0..65535) Err.illegalQty()
+        if (value !in 0..255) Err.illegalQty()
+        ram[addr] = value.toByte()
+    }
+
+    internal fun peekByte(addr: Int): Int {
+        if (addr !in 0..65535) Err.illegalQty()
+        return ram[addr].toInt() and 0xFF
     }
 
     private fun doHelp() {
@@ -218,9 +353,11 @@ class Interpreter(private val out: BasicConsole) {
         out.println(" GOTO IF/THEN FOR/TO/STEP NEXT")
         out.println(" LET INPUT GOSUB RETURN")
         out.println(" LOAD HELP GO")
+        out.println(" DATA READ RESTORE POKE")
         out.println("FUNCTIONS:")
         out.println(" ABS INT RND LEN CHR$ ASC")
         out.println(" LEFT$ RIGHT$ MID$ STR$ VAL")
+        out.println(" PEEK TAB")
         out.println("OPERATORS: + - * / ^ = <> < > <= >=")
         out.println(" AND OR NOT")
     }
@@ -286,6 +423,8 @@ class Interpreter(private val out: BasicConsole) {
 
     private fun doLet() {
         val nameTok = consume(TokenType.IDENT)
+        // Don't let `LEN = 5` or `CHR$ = "X"` silently shadow a builtin.
+        if (Builtins.isBuiltin(nameTok.text) || nameTok.text == "PEEK") Err.syntax()
         if (peek().type != TokenType.EQ) Err.syntax()
         advance()
         val v = evalExpr()
@@ -309,19 +448,55 @@ class Interpreter(private val out: BasicConsole) {
         val vars = mutableListOf<Token>()
         vars += consume(TokenType.IDENT)
         while (peek().type == TokenType.COMMA) { advance(); vars += consume(TokenType.IDENT) }
-        if (prompt != null) out.print(prompt)
-        out.print("? ")
-        val line = out.readLine()
-        val parts = if (vars.size > 1) line.split(",").map { it.trim() } else listOf(line.trim())
-        for ((i, vt) in vars.withIndex()) {
-            val raw = parts.getOrNull(i) ?: ""
-            if (vt.text.endsWith("$")) {
-                strVars[vt.text] = raw
-            } else {
-                val n = raw.toDoubleOrNull() ?: 0.0
-                numVars[vt.text] = n
+        while (true) {
+            if (prompt != null) out.print(prompt)
+            out.print("? ")
+            val line = out.readLine()
+            val parts = if (vars.size > 1) splitInputFields(line) else listOf(line.trim())
+            val parsed = arrayOfNulls<Any?>(vars.size)
+            var redo = false
+            for ((i, vt) in vars.withIndex()) {
+                val raw = parts.getOrNull(i) ?: ""
+                if (vt.text.endsWith("$")) {
+                    // Clamp here so a future console (or a test fixture) can't
+                    // feed gigabyte strings that defeat the string-length cap.
+                    parsed[i] = if (raw.length > MAX_STRING_LENGTH)
+                        raw.substring(0, MAX_STRING_LENGTH) else raw
+                } else {
+                    val n = raw.toDoubleOrNull()
+                    if (n == null) { redo = true; break }
+                    parsed[i] = n
+                }
+            }
+            if (redo) { out.println("?REDO FROM START"); continue }
+            for ((i, vt) in vars.withIndex()) {
+                if (vt.text.endsWith("$")) strVars[vt.text] = parsed[i] as String
+                else numVars[vt.text] = parsed[i] as Double
+            }
+            return
+        }
+    }
+
+    // Split INPUT response on commas, but keep commas that fall inside a pair
+    // of double quotes. Surrounding quotes are stripped; whitespace is trimmed.
+    // Matches the canonical BASIC behaviour where `"A,B","C"` parses as two
+    // fields: `A,B` and `C`.
+    private fun splitInputFields(s: String): List<String> {
+        val out = mutableListOf<String>()
+        val current = StringBuilder()
+        var inQuotes = false
+        for (c in s) {
+            when {
+                c == '"' -> inQuotes = !inQuotes
+                c == ',' && !inQuotes -> {
+                    out += current.toString().trim()
+                    current.clear()
+                }
+                else -> current.append(c)
             }
         }
+        out += current.toString().trim()
+        return out
     }
 
     private fun doGosub(): Continuation {
@@ -356,10 +531,18 @@ class Interpreter(private val out: BasicConsole) {
     private fun doLoad() {
         val nameVal = evalExpr()
         val name = (nameVal as? Value.Str)?.v ?: Err.typeMismatch()
-        // Optional ,device,secondary: consume but ignore
+        // Optional ,device,secondary: real BASIC requires these to be numeric
+        // literals. Restricting to NUMBER tokens (rather than expressions) means
+        // a malicious program can't trigger side effects via an evaluated arg.
         if (peek().type == TokenType.COMMA) {
-            advance(); evalExpr()
-            if (peek().type == TokenType.COMMA) { advance(); evalExpr() }
+            advance()
+            if (peek().type != TokenType.NUMBER) Err.syntax()
+            advance()
+            if (peek().type == TokenType.COMMA) {
+                advance()
+                if (peek().type != TokenType.NUMBER) Err.syntax()
+                advance()
+            }
         }
         val prog = BuiltInPrograms.lookup(name) ?: Err.fileNotFound()
         out.println("SEARCHING FOR $name")
@@ -446,9 +629,9 @@ class Interpreter(private val out: BasicConsole) {
             val r = evalMul()
             left = when {
                 left is Value.Str && r is Value.Str && op == TokenType.PLUS ->
-                    Value.Str(left.v + r.v)
+                    Value.Str(concatStrings(left.v, r.v))
                 left is Value.Num && r is Value.Num ->
-                    Value.Num(if (op == TokenType.PLUS) left.v + r.v else left.v - r.v)
+                    finite(if (op == TokenType.PLUS) left.v + r.v else left.v - r.v)
                 else -> Err.typeMismatch()
             }
         }
@@ -461,10 +644,10 @@ class Interpreter(private val out: BasicConsole) {
             val r = numOf(evalPow())
             val l = numOf(left)
             left = when (op) {
-                TokenType.STAR -> Value.Num(l * r)
+                TokenType.STAR -> finite(l * r)
                 TokenType.SLASH -> {
                     if (r == 0.0) Err.divZero()
-                    Value.Num(l / r)
+                    finite(l / r)
                 }
                 else -> Err.syntax()
             }
@@ -476,9 +659,19 @@ class Interpreter(private val out: BasicConsole) {
         if (peek().type == TokenType.CARET) {
             advance()
             val exp = evalUnary()
-            return Value.Num(numOf(base).pow(numOf(exp)))
+            return finite(numOf(base).pow(numOf(exp)))
         }
         return base
+    }
+
+    private fun finite(d: Double): Value.Num {
+        if (!d.isFinite()) Err.overflow()
+        return Value.Num(d)
+    }
+
+    private fun concatStrings(a: String, b: String): String {
+        if (a.length + b.length > MAX_STRING_LENGTH) Err.stringTooLong()
+        return a + b
     }
     private fun evalUnary(): Value {
         if (peek().type == TokenType.MINUS) {
@@ -501,6 +694,14 @@ class Interpreter(private val out: BasicConsole) {
             }
             TokenType.IDENT -> {
                 advance()
+                if (t.text == "PEEK") {
+                    if (peek().type != TokenType.LPAREN) Err.syntax()
+                    advance()
+                    val addr = numOf(evalExpr()).toInt()
+                    if (peek().type != TokenType.RPAREN) Err.syntax()
+                    advance()
+                    return Value.Num(peekByte(addr).toDouble())
+                }
                 if (Builtins.isBuiltin(t.text)) {
                     if (peek().type != TokenType.LPAREN) Err.syntax()
                     advance()
@@ -511,6 +712,11 @@ class Interpreter(private val out: BasicConsole) {
                     }
                     if (peek().type != TokenType.RPAREN) Err.syntax()
                     advance()
+                    // RND owns interpreter-local state; route it through rnd().
+                    if (t.text == "RND") {
+                        if (args.size != 1) Err.syntax()
+                        return rnd(numOf(args[0]))
+                    }
                     return Builtins.call(t.text, args)
                 }
                 if (t.text.endsWith("$")) Value.Str(strVars[t.text] ?: "")
@@ -522,8 +728,9 @@ class Interpreter(private val out: BasicConsole) {
 
     private fun numOf(v: Value): Double = (v as? Value.Num)?.v ?: Err.typeMismatch()
 
-    private fun peek(): Token = tokens[pos]
-    private fun advance(): Token = tokens[pos++]
+    private fun peek(): Token = if (pos < tokens.size) tokens[pos] else EOL_TOKEN
+    private fun advance(): Token =
+        if (pos < tokens.size) tokens[pos++] else EOL_TOKEN
     private fun consume(t: TokenType): Token {
         if (peek().type != t) Err.syntax()
         return advance()

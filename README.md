@@ -2,14 +2,21 @@
 
 A Commodore 128 emulator for Android. I wanted a "good enough", very basic emulator that would tickle my nostalgia. This has both 128 and 64 mode (GO 64 / GO 128) and boots into 64 mode if you hold down a volume key while launching. Maybe CP/M mode will be added sometime...
 
+I don't have a graphics mode yet, so it is just text-based.
+
+You can load a little demo program with `LOAD "*",1,8`
+
 ## What works
 
 - 40×25 PETSCII text grid with blinking cursor and authentic boot banner.
 - BASIC interpreter: `PRINT`, `LIST`, `NEW`, `RUN`, `END`, `REM`, `HELP`,
   `GOTO`, `IF`/`THEN`, `FOR`/`TO`/`STEP`, `NEXT`, `LET`, `INPUT`, `GOSUB`/
-  `RETURN`, `LOAD`, `GO 64` / `GO 128`.
+  `RETURN`, `LOAD`, `GO 64` / `GO 128`, `DATA`/`READ`/`RESTORE`, `POKE`.
 - Functions: `ABS`, `INT`, `RND`, `LEN`, `CHR$`, `ASC`, `LEFT$`, `RIGHT$`,
-  `MID$`, `STR$`, `VAL`.
+  `MID$`, `STR$`, `VAL`, `PEEK`, `TAB`.
+- 64K of simulated RAM for `PEEK`/`POKE`. No banking, no I/O side effects —
+  writes to VIC-II / SID / etc. registers are accepted but produce no visible
+  output (this is a software interpreter, not a hardware emulator).
 - Full operator set including string `+` concat, comparisons, `AND`/`OR`/`NOT`.
 - Numeric (`A`) and string (`A$`) variables; `FOR` loop frames; `GOSUB` stack.
 - Authentic error messages (`?SYNTAX ERROR`, `?DIVISION BY ZERO ERROR`,
