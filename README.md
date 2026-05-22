@@ -47,7 +47,7 @@ Build:
 
     ./gradlew :app:assembleDebug
 
-The APK lands at `app/build/outputs/apk/debug/app-debug.apk`.
+The APK lands at `app/build/outputs/apk/debug/app-debug.apk`. (Yes, it's a debug... I'm not signing it and going through Google's certification and all that for this one...)
 
 Run the test suite:
 
