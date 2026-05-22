@@ -5,6 +5,7 @@ enum class TokenType {
     PRINT, LIST, NEW, RUN, END, REM, HELP,
     GOTO, IF, THEN, FOR, TO, STEP, NEXT,
     LET, INPUT, GOSUB, RETURN, LOAD, GO,
+    DATA, READ, RESTORE, POKE,
     AND, OR, NOT,
     PLUS, MINUS, STAR, SLASH, CARET,
     EQ, NEQ, LT, GT, LTE, GTE,
@@ -35,6 +36,10 @@ private val KEYWORDS = mapOf(
     "RETURN" to TokenType.RETURN,
     "LOAD" to TokenType.LOAD,
     "GO" to TokenType.GO,
+    "DATA" to TokenType.DATA,
+    "READ" to TokenType.READ,
+    "RESTORE" to TokenType.RESTORE,
+    "POKE" to TokenType.POKE,
     "AND" to TokenType.AND,
     "OR" to TokenType.OR,
     "NOT" to TokenType.NOT,
@@ -68,10 +73,17 @@ object Tokenizer {
                     if (i < src.length && src[i] == 'E') {
                         i++
                         if (i < src.length && (src[i] == '+' || src[i] == '-')) i++
+                        val expDigitsStart = i
                         while (i < src.length && src[i].isDigit()) i++
+                        // Require at least one digit after E / E+ / E-. Without this,
+                        // strings like "1E" or "1E-" would parse to NumberFormatException
+                        // and escape the BasicError channel.
+                        if (i == expDigitsStart) Err.syntax()
                     }
                     val text = src.substring(start, i)
-                    out += Token(TokenType.NUMBER, text, text.toDouble())
+                    val parsed = try { text.toDouble() } catch (_: NumberFormatException) { Err.syntax() }
+                    if (!parsed.isFinite()) Err.overflow()
+                    out += Token(TokenType.NUMBER, text, parsed)
                 }
                 c.isLetter() -> {
                     val start = i
@@ -88,8 +100,28 @@ object Tokenizer {
                         i = src.length
                     } else {
                         val kw = KEYWORDS[word]
-                        if (kw != null) out += Token(kw, word)
-                        else out += Token(TokenType.IDENT, word)
+                        if (kw != null) {
+                            out += Token(kw, word)
+                        } else {
+                            // C64-style keyword-prefix matching: in real BASIC `IFP>194` lexes
+                            // as IF + P, not as an identifier "IFP". If no whole-word match,
+                            // emit the longest keyword prefix and rewind to re-scan the rest.
+                            // String-suffixed names ("AB$") are left alone.
+                            var matched = false
+                            if (!word.endsWith("$")) {
+                                for (len in word.length - 1 downTo 2) {
+                                    val prefix = word.substring(0, len)
+                                    val pkw = KEYWORDS[prefix]
+                                    if (pkw != null) {
+                                        out += Token(pkw, prefix)
+                                        i = start + len
+                                        matched = true
+                                        break
+                                    }
+                                }
+                            }
+                            if (!matched) out += Token(TokenType.IDENT, word)
+                        }
                     }
                 }
                 else -> {

@@ -7,6 +7,12 @@ import androidx.compose.runtime.setValue
 const val COLS = 40
 const val ROWS = 25
 
+// PETSCII control codes recognized by putChar/putString. These are the
+// Commodore conventions used by `PRINT CHR$(147)` (clear screen) and
+// `PRINT CHR$(19)` (home cursor).
+private const val PETSCII_CLR = ''
+private const val PETSCII_HOME = ''
+
 class TextBuffer {
     private val cells = IntArray(COLS * ROWS) // ASCII code, 0 = blank
     var cursorX: Int = 0
@@ -26,8 +32,10 @@ class TextBuffer {
 
     fun putChar(c: Char) {
         when (c) {
-            '\n' -> { newline() }
-            '\r' -> { cursorX = 0 }
+            '\n' -> newline()
+            '\r' -> cursorX = 0
+            PETSCII_CLR -> clear()
+            PETSCII_HOME -> { cursorX = 0; cursorY = 0 }
             else -> {
                 if (cursorX >= COLS) newline()
                 cells[cursorY * COLS + cursorX] = c.code and 0xFF
@@ -42,6 +50,8 @@ class TextBuffer {
             when (c) {
                 '\n' -> newline()
                 '\r' -> cursorX = 0
+                PETSCII_CLR -> clear()
+                PETSCII_HOME -> { cursorX = 0; cursorY = 0 }
                 else -> {
                     if (cursorX >= COLS) newline()
                     cells[cursorY * COLS + cursorX] = c.code and 0xFF
