@@ -6,6 +6,10 @@ I don't have a graphics mode yet, so it is just text-based.
 
 You can load a little demo program with `LOAD "*",1,8`
 
+![C128 Mode](/../screenshots/screenshots/Screenshot_20260522-185325_1.png?raw=true)
+![GO 64](/../screenshots/screenshots/Screenshot_20260522-185335_1.png?raw=true)
+![C64 Mode](/../screenshots/screenshots/Screenshot_20260522-185342_1.png?raw=true)
+
 ## What works
 
 - 40×25 PETSCII text grid with blinking cursor and authentic boot banner.
